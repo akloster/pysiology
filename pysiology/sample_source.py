@@ -1,0 +1,3 @@
+
+class SampleSource(object):
+    pass
