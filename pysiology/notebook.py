@@ -1,4 +1,5 @@
 import pandas as pd
+import time
 import json
 import re
 import IPython
@@ -89,6 +90,7 @@ class Experiment(object):
 
         self.file_name = file_name
         if file_name is not None:
+            self.last_saved_at = time.time()
             self.batch_number = self.get_free_batch(self.file_name)
         else:
             self.batch_number = 0
@@ -114,7 +116,8 @@ class Experiment(object):
         if message is not None:
             self.handler(self, message)
             if self.file_name is not None:
-                self.save()
+                if time.time() - self.last_saved_at>=15.0:
+                    self.save()
         sys.stdout.flush()
 
     @coroutine
