@@ -10,8 +10,9 @@ import math
 import random
 import numpy as np
 import bcolz
-from sample_source import SampleSource
-from streamer import Streamer
+from streamer import StreamerCommand
+from utils import TSLogger, message
+from command import ServerCommand
 
 
 def packet_size(nChannels):
@@ -25,68 +26,66 @@ class BitalinoParserError(Exception):
     pass
 
 
-
-class BitalinoPeriodicStreamer(Streamer):
-    """ Simply streams one Bitalino channel. """
-    def __init__(self, bitalino_manager, channel, interval, stretch,  *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.bitalino_manager = bitalino_manager
-        self.channel = channel
-        try:
-            interval = float(interval)
-        except:
-            interval = 1
-        try:
-            stretch = float(stretch)
-        except:
-            stretch = 5
-
-        self.interval = interval
-        self.stretch = stretch
-
-
+class BitalinoConnectCommand(ServerCommand):
     @coroutine
-    def run(self, message_queue):
-        self.last_segment = len(self.bitalino_manager.segments)-1
-        self.last_sample = self.bitalino_manager.sample_count
-
-        while True:
-            if self.bitalino_manager.sample_count == 0:
-                yield from sleep(self.interval)
-            else:
-                #values = self.bitalino_manager.get_all_since(self.channel, self.last_segment, self.last_sample)
-                values = self.bitalino_manager.get_last_n_seconds(self.channel,5)
-                self.last_segment = len(self.bitalino_manager.segments)-1
-                self.last_sample = self.bitalino_manager.sample_count
-
-                values = np.array(values, dtype=np.float16)
-                time_offset = self.bitalino_manager.time_offset+len(values)\
-                              / self.bitalino_manager.rate
-
-                msg = self.make_message(channel=self.channel,
-                                        values=values,
-                                        time_offset=time_offset
-                                        )
-
-                yield from message_queue.put(msg)
-                yield from sleep(self.interval)
+    def run(self, **kwargs):
+        print ("connect bitalino...")
+        address = kwargs['address']
+        print(address)
+        yield from bitalino_manager.connect(address)
+        yield from self.websocket.send(message(msg="bitalino_connected"))
 
 
-class BitalinoManager(SampleSource):
+class BitalinoManager(object):
+    """ Manages the Bitalinodevices globally. This is very much
+        the same as the MindwaveManager, but before I merge the two
+        into some class hierarchy, I need to be more sure about how
+        everything should fit together in the end.
+        
+        There are differences in managing bitalino and mindwave
+        devices. The bitalino (or at least my implementation of
+        the parser) sometimes messes up and the recording needs 
+        to be restarted. The Mindwave's protocol on the other hand
+        is rock solid. """
+
+    def __init__(self):
+        self.devices = {}
+
+    def connect(self, address):
+        """ Connects the server to  thedevice with the given address.
+            Returns: A Task which finishes when the connection is successful.
+            This is not a coroutine, even though it returns a Task.
+        """
+        if address in self.devices:
+            return self.devices[address].connected.wait()
+
+        device = BitalinoDevice(address)
+        self.devices[address] = device
+        asyncio.get_event_loop().create_task(device.run())
+        return device.connected.wait()
+
+    def disconnect(self, address):
+        self.devices[address].disconnect()
+
+
+bitalino_manager = BitalinoManager()
+
+
+class BitalinoDevice(object):
     def __init__(self, addr):
         super().__init__()
         self.addr = addr
-        self.record = True
-        self.sample_count = 0
-        self.analog_channels = (0, 2, 3)
+        self.analog_channels = (1, 2, 3)
         self.rate = 1000
+
         self.time_offset = None
         n = len(self.analog_channels)
-
-        self.segments = []
+        self.connected = asyncio.Event()
 
     @coroutine
     def run(self):
+        self.sample_count = 0
+        self.channel_samples = [TSLogger(dtype="float16") for c in self.analog_channels]
         yield from self.connect()
 
 
@@ -108,18 +107,15 @@ class BitalinoManager(SampleSource):
     def connect(self):
         """ Try to connect to the device. This coroutine runs forever. """
 
-        n = len(self.analog_channels)
         while 1:
-            self.channel_samples = [bcolz.carray([], dtype=np.float16) for i in range(n)]
-            self.sample_count = 0
             print("Trying to connect")
             # Loop until a connection is successful
-
             success = yield from self.try_to_connect()
             if success:
                 print("Connection made!")
+                if not self.connected.is_set():
+                    self.connected.set()
                 self.send_start()
-                self.segments.append(self.channel_samples)
                 yield from self.read_loop()
             else:
                 yield from sleep(3)
@@ -177,9 +173,9 @@ class BitalinoManager(SampleSource):
                     sample[5] = packet[-8] & 0x3F
 
                 self.sample_count += 1
-
+                self.fragment_samples += 1
             for i in range(n):
-                self.channel_samples[i].append(sample[i])
+                self.channel_samples[i].log(self.time_offset + self.fragment_samples * 1/self.rate, sample[i])
 
     @coroutine
     def read_loop(self):
@@ -190,56 +186,67 @@ class BitalinoManager(SampleSource):
         error_count = 0
         self.time_offset = None
         while 1:
-            yield from sleep(1)
-            if self.record:
-                t = time.time()
-                yield from sleep(0.05)
-                try:
-                    buffer = self.socket.recv(10000)
-                    # If this is the first time data is being read, guess
-                    # the starting time of the current read
-                    if self.time_offset is None:
-                        t = time.time() - len(buffer) / self.rate
-                        self.time_offset = t
+            yield from sleep(0.01)
+            try:
+                buffer = self.socket.recv(10000)
+                # If this is the first time data being read, guess
+                # the starting time of the current read
+                print(len(buffer))
+                if len(buffer)>0:
+                    t = time.time() - math.ceil(len(buffer) / self.rate \
+                                / packet_size(len(self.analog_channels)))
+                    self.time_offset = t
+                    self.fragment_samples = 0
 
                     for b in buffer:
                         parser.send(b)
-                    # reset error count
-                    error_count = 0
-                except bluetooth.BluetoothError as e:
-                    print("error on reading:", e)
-                    if str(e) == "(11, 'Resource temporarily unavailable')":
-                        error_count += 1
-                        if error_count > 2:
-                            self.socket.close()
-                            return
-                        yield from sleep(1 + error_count*1/2)
-                    else:
+                # reset error count
+                error_count = 0
+            except bluetooth.BluetoothError as e:
+                print("error on reading:", e)
+                if str(e) == "(11, 'Resource temporarily unavailable')":
+                    error_count += 1
+                    if error_count > 2:
                         self.socket.close()
-                        yield from sleep(1)
                         return
-                except BitalinoParserError as e:
-                    # Kill connection. We can't reconstruct the
-                    # timeline reliably otherwise.
-                    self.socket.send(bytes([0]))
-                    self.socket.send(bytes([0]))
-                    while len(self.socket.recv(10000)>0):
-                        pass
+                    yield from sleep(1 + error_count*1/2)
+                else:
                     self.socket.close()
+                    yield from sleep(1)
                     return
-            else:
-                yield from sleep(0.5)
+            except BitalinoParserError as e:
+                # Kill connection. We can't reconstruct the
+                # timeline reliably otherwise.
+                self.socket.send(bytes([0]))
+                self.socket.send(bytes([0]))
+                while len(self.socket.recv(10000)>0):
+                    pass
+                self.socket.close()
+                return
 
-    def get_last_n_seconds(self, channel, n):
-        m = int(min(n * self.rate, self.sample_count))
-        if m==0:
-            return bcolz.carray([], dtype=np.float16)
-        else:
-            return self.channel_samples[channel][-m:]
+class BitalinoStreamCommand(StreamerCommand):
+    @coroutine
+    def run(self, address=None, interval=1.0, **kwargs):
+        if address not in bitalino_manager.devices:
+            self.websocket.send(msg="bitalino_error",
+                                error_name="address not connected",
+                                description="No device with this address connected.")
+            return
+        device =  bitalino_manager.devices[address]
 
-    def get_all_since(self, channel, last_segment, last_sample):
-        channel_data = self.segments[last_segment][channel]
-        if last_sample > len(channel_data):
-            last_sample = 0
-        return channel_data[last_sample:]
+        last_index = device.sample_count
+        print ("Bitalino Streaming")
+        while True:
+            yield from device.connected.wait()
+            yield from sleep(interval)
+            msg = dict(mtp="bitalino_stream",
+                       address=address)
+            for i, channel in enumerate(device.analog_channels):
+                ts = device.channel_samples[i]
+                values = ts.values[last_index:]
+                times = ts.times[last_index:]
+                msg["analog_%i" % channel ] = [times, values]
+            s = message(**msg)
+            yield from self.websocket.send(s)
+            last_index = device.sample_count
 

@@ -10,13 +10,48 @@ import random
 import numpy as np
 import bcolz
 from sample_source import SampleSource
-from utils import TSLogger
-from streamer import Streamer
-from np_json import ArrayAwareJSONEncoder
+from utils import TSLogger, message
+from streamer import StreamerCommand
 import json
+from command import ServerCommand
 
 
-class MindwaveManager(SampleSource):
+class MindwaveConnectCommand(ServerCommand):
+    @coroutine
+    def run(self, **kwargs):
+        print ("connect mindwave...")
+        address = kwargs['address']
+        print(address)
+        yield from mindwave_manager.connect(address)
+        yield from self.websocket.send(message(msg="mindwave_connected"))
+
+
+class MindwaveManager(object):
+    """ Manages the Mindwave devices globally. Not tested with multiple devices yet,
+        though. """
+
+    def __init__(self):
+        self.devices = {}
+
+    def connect(self, address):
+        """ Connects the server to  thedevice with the given address.
+            Returns: A Task which finishes when the connection is successful.
+            This is not a coroutine, even though it returns a Task.
+        """
+        if address in self.devices:
+            return self.devices[address].connected.wait()
+        device = MindwaveDevice(address)
+        self.devices[address] = device
+        asyncio.get_event_loop().create_task(device.run())
+        return device.connected.wait()
+
+    def disconnect(self, address):
+        self.devices[address].disconnect()
+
+
+mindwave_manager = MindwaveManager()
+
+class MindwaveDevice(object):
     def __init__(self, addr):
         super().__init__()
         self.addr = addr
@@ -31,6 +66,8 @@ class MindwaveManager(SampleSource):
         self.meditation = TSLogger()
         self.poor_signal = TSLogger()
         self.blink_strength = TSLogger()
+        self.connected = asyncio.Event()
+
 
     def get_indices(self):
         return dict(raw=len(self.raw),
@@ -68,6 +105,7 @@ class MindwaveManager(SampleSource):
             success = yield from self.try_to_connect()
             if success:
                 print("Connection made!")
+                self.connected.set()
                 #self.segments.append(self.channel_samples)
                 yield from self.read_loop()
             else:
@@ -85,7 +123,7 @@ class MindwaveManager(SampleSource):
         self.time_offset = time.time()
         while 1:
             if self.record:
-                yield from sleep(0.25)
+                yield from sleep(0.05)
                 try:
                     buffer = self.socket.recv(10000)
                     self.raw_counter = 0
@@ -179,33 +217,39 @@ class MindwaveManager(SampleSource):
                     print(hex(code))
                     #pos +=1
             continue
+    def disconnect(self):
+        pass
 
 value_names = ["attention", "meditation", "poor_signal", "blink_strength", "raw"]
 
-class MindwaveStreamer(Streamer):
-    def __init__(self, mindwave_manager, interval):
-        self.interval = interval
-        self.mindwave_manager= mindwave_manager
-        m = mindwave_manager
 
+class MindwaveStreamCommand(StreamerCommand):
     @coroutine
-    def run(self, message_queue):
-        self.last_index = 0
+    def run(self, address=None, interval=1.0, **kwargs):
 
-        last_indices = self.mindwave_manager.get_indices()
+        if address not in mindwave_manager.devices:
+            self.websocket.send(msg="mindwave_error",
+                                error_name="address not connected",
+                                description="No device with this address connected.")
+            return
+        device =  mindwave_manager.devices[address]
+
+        last_index = 0
+        last_indices = device.get_indices()
+        print ("Mindwave Streaming")
         while True:
-            msg = dict(mtp="mindwave-stream")
+            yield from device.connected.wait()
+            yield from sleep(interval)
+            msg = dict(mtp="mindwave_stream",
+                       address=address)
             for name in value_names:
-                ts = getattr(self.mindwave_manager, name)
+                ts = getattr(device, name)
                 last_index = last_indices[name]
                 values = ts.values[last_index:]
                 times = ts.times[last_index:]
                 #print (name, " ", len(values), " ", len(times))
                 msg[name] = [times, values]
 
-            msg = json.dumps(msg, cls=ArrayAwareJSONEncoder)
-            #print(msg)
-            yield from message_queue.put(msg)
-            last_indices = self.mindwave_manager.get_indices()
-            yield from sleep(self.interval)
+            yield from self.websocket.send(message(**msg))
+            last_indices = device.get_indices()
 
