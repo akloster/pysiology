@@ -10,7 +10,7 @@ class ArrayAwareJSONEncoder(json.JSONEncoder):
                 r = [int(v) for v in obj]
                 return r
             elif obj.dtype in ("float16", "float32", "float64"):
-                r = [float(v) for v in obj]
+                r = [np.double(v) for v in obj]
                 return r
         return json.JSONEncoder.default(self, obj)
 

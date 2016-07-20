@@ -5,7 +5,7 @@ Currently this package is not ready for distribution, and you will have to do so
 
 Prerequisites:
 
-- Python 3.4
+- Python 3.5
 - pybluez (you will need libbluetooth-dev)
 - aiohttp
 - akloster/nb-assets
