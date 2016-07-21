@@ -15,7 +15,5 @@ Status:
 * Pysiology now uses the Jupyter kernel's Tornado loop to handle a 
   websocket connection to the streaming server.
 * Experiments use Metaclasses to define devices
-* Mindwave and Bitalino devices are implemented
-* Bitalino can stream, but data parsing is seriously broken... working on
-  incorporating manufacturer's code
-* Notebook code now uses a comm channel to update bokeh plots
+* Mindwave and Muse integration is near-complete
+* Bitalino can stream, but data parsing is seriously broken...
