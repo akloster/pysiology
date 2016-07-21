@@ -37,7 +37,6 @@ def fork(generator):
         self.result()
     fut.add_done_callback(temp)
 
-
 class TSLogger(object):
     def __init__(self, dtype="int16"):
         self.values = bcolz.carray([], dtype="int16")

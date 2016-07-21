@@ -1,22 +1,21 @@
 import sys
+import json
 import datetime
 import copy
+import re
 import tornado
 import time
 import IPython
+import os
 from ipywidgets import widgets
 from IPython.display import display
 import pandas as pd
 import numpy as np
-import bokeh
-import os
 from tornado.websocket import websocket_connect
 from tornado.httpclient import HTTPRequest
 from pysiology.utils import message
-import json
 import tables
 import h5py
-import re
 
 
 class PysiologyClient(object):

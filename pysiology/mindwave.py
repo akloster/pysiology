@@ -17,9 +17,8 @@ from command import ServerCommand
 class MindwaveConnectCommand(ServerCommand):
     @coroutine
     def run(self, **kwargs):
-        print ("Connect to Mindwave")
+        print ("Connecting to Mindwave")
         address = kwargs['address']
-        print(address)
         yield from mindwave_manager.connect(address)
         yield from self.websocket.send(message(msg="mindwave_connected"))
 
@@ -48,7 +47,6 @@ class MindwaveManager(object):
 
 
 mindwave_manager = MindwaveManager()
-
 
 class MindwaveDevice(object):
     def __init__(self, addr):
@@ -121,7 +119,7 @@ class MindwaveDevice(object):
         self.time_offset = time.time()
         while 1:
             if self.record:
-                yield from sleep(0.1)
+                yield from sleep(0.05)
                 try:
                     buffer = self.socket.recv(3000)
                     self.raw_counter = 0
@@ -134,13 +132,13 @@ class MindwaveDevice(object):
                     print("error on reading:", e)
                     if str(e) == "(11, 'Resource temporarily unavailable')":
                         error_count += 1
-                        if error_count > 2:
+                        if error_count > 3:
                             self.socket.close()
                             return
-                        yield from sleep(1 + error_count*1/2)
+                        yield from sleep(0.01 + error_count*0.01)
                     else:
                         self.socket.close()
-                        yield from sleep(1)
+                        yield from sleep(0.5)
                         return
             else:
                 yield from sleep(0.5)
@@ -235,7 +233,9 @@ class MindwaveStreamCommand(StreamerCommand):
         print ("Mindwave Streaming")
         yield from device.connected.wait()
         last_indices = device.get_indices()
+        last_indices = device.get_indices()
         while True:
+            yield from device.connected.wait()
             yield from sleep(interval)
             msg = dict(mtp="mindwave_stream",
                        address=address)

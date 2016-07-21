@@ -15,7 +15,6 @@ from bluetooth_discovery import  DiscoverBluetoothCommand
 from muse import MuseStreamCommand, MuseConnectCommand
 
 
-
 command_mapping = {'discover_bluetooth': DiscoverBluetoothCommand,
                    'mindwave_connect': MindwaveConnectCommand,
                    'mindwave_stream': MindwaveStreamCommand,
@@ -63,6 +62,7 @@ class PysioWebSocket(object):
                             self.parse_message(msg.data)
                 elif name=="send":
                     x = ws.send_str(msg)
+                    pass
         print("Cancelling tasks")
 
         for command in self.running_commands:
@@ -89,6 +89,7 @@ class PysioWebSocket(object):
         return cls(server)
 
 
+
 class DataServer(web.Application):
     def __init__(self):
         super().__init__()
@@ -111,10 +112,6 @@ class DataServer(web.Application):
         task.add_done_callback(temp)
 
 loop = asyncio.get_event_loop()
-
-#loop.create_task(bluetooth_manager.run())
-#mindwave addr = MindwaveManager("74:E5:43:BE:42:50")
-#bitalino addr = "98:D3:31:40:1B:B0"
 
 app = DataServer()
 f = loop.create_server(app.make_handler(), '127.0.0.1', 9010)
